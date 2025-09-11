@@ -1,10 +1,9 @@
 package main
 
 import (
-	"fmt"
-	"net/http"
 	"io"
-
+	"os"
+	"net/http"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
 )
@@ -66,10 +65,26 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Read all the image data into a byte slice using io.ReadAll:
-	data, err := io.ReadAll(file)
+	// create a relative path for the asset (a filename)
+	// used for the URL that clients will use to access the file (like http://localhost:8091/assets/12345.png)
+	assetPath := getAssetPath(videoID, mediaType)
+	// take that relative path and converts it to a full filesystem path where the file will 
+	// actually be stored on disk
+	assetDiskPath := cfg.getAssetDiskPath(assetPath)
+
+	// opens a file for writing at the given path:
+	//	* If it doesn't exist, creates it. If it does, truncates it to empty
+	dst, err := os.Create(assetDiskPath)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error reading file", err)
+		respondWithError(w, http.StatusInternalServerError, "Unable to create file on server", err)
+		return
+	}
+	defer dst.Close()	// always defer close the file we just created
+	// streams all bytes from the source file (the uploaded multipart.File) to the destination dst 
+	// (the os.File you created):
+	// Returns the number of bytes written and an error
+	if _, err = io.Copy(dst, file); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error saving file", err)
 		return
 	}
 
@@ -85,24 +100,16 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Save the thumbnail to the global map:
-	// Create a new thumbnail struct with the image data and media type:
-	// Add the thumbnail to the global map, using the video's ID as the key:
-	videoThumbnails[videoID] = thumbnail{
-		data:      data,
-		mediaType: mediaType,
-	}
-
-	// Update the video metadata so that it has a new thumbnail URL
-	// The thumbnail URL should have this format:
-	// http://localhost:<port>/api/thumbnails/{videoID}
-	url := fmt.Sprintf("http://localhost:%s/api/thumbnails/%s", cfg.port, videoID)
+	// builds the public URL (e.g., http://localhost:8091/assets/<id>.<ext>) from a disk path like 
+	// /assets/<id>.<ext>
+	url := cfg.getAssetURL(assetPath)
+	// store a pointer to that string in the video struct
+	// Using a pointer allows it to be nil when absent
 	video.ThumbnailURL = &url
-
+	
 	// then update the record in the database by using the cfg.db.UpdateVideo function:
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
-		delete(videoThumbnails, videoID)
 		respondWithError(w, http.StatusInternalServerError, "Couldn't update video", err)
 		return
 	}

@@ -49,14 +49,34 @@ func MakeJWT(
 	return token.SignedString(signingKey)
 }
 
+// This function signature tells us it takes two string parameters:
+//	* tokenString: The actual JWT token (a long encoded string)
+//	* tokenSecret: The secret key used to verify the token's authenticity
+// And it returns:
+// 	* uuid.UUID: The user's ID if validation succeeds
+// 	* error: Any error that occurred during validation
 func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
+	// create an empty struct to hold the "claims" (the data) from inside the JWT token. RegisteredClaims 
+	// is a standard struct that contains common JWT fields like:
+	//	* Subject (usually the user ID)
+	// 	* ExpiresAt (when the token expires)
+	// 	* IssuedAt (when the token was created)
 	claimsStruct := jwt.RegisteredClaims{}
+	// ParseWithClaims does three things:
+	//	1. Decodes the JWT token string back into its parts
+	//	2. Verifies the signature using the secret key (that anonymous function returns the secret as bytes)
+	//	3. Populates the claimsStruct with the decoded data
 	token, err := jwt.ParseWithClaims(
 		tokenString,
 		&claimsStruct,
+		// The anonymous function is a callback that provides the secret key for verification:
+		// Takes a JWT token as input
+		// Returns an interface{} (which can be any type) and an error
+		// []byte(tokenSecret): Converts the tokenSecret string into a byte slice
 		func(token *jwt.Token) (interface{}, error) { return []byte(tokenSecret), nil },
 	)
 	if err != nil {
+		// if there's an error, return an empty/zero uuid and the error:
 		return uuid.Nil, err
 	}
 
