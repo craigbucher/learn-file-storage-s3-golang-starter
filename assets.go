@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/google/uuid"
+	"crypto/rand"
+	"encoding/base64"
 )
 
 // ensure a directory exists at cfg.assetsRoot:
@@ -22,11 +22,22 @@ func (cfg apiConfig) ensureAssetsDir() error {
 }
 
 // Generate the filename:
-func getAssetPath(videoID uuid.UUID, mediaType string) string {
+func getAssetPath(mediaType string) string {
+	// allocates a byte slice of length 32. It’s just 32 zeroed bytes to start:
+	base := make([]byte, 32)
+	// fill that slice with 32 cryptographically secure random bytes using crypto/rand. 
+	// The first return value is the number of bytes written (we’re ignoring it with _):
+	_, err := rand.Read(base)
+	// rand should never return an error, so it's fatal if it does:
+	if err != nil {
+		panic("failed to generate random bytes")
+	}
+	// convert the random 'base' to base64.RawURLEncoding, a URL-safe string:
+	id := base64.RawURLEncoding.EncodeToString(base)
 	// convert the mediaType to a file extension
 	ext := mediaTypeToExt(mediaType)
 	// concatinate the videoID and extension into a filename
-	return fmt.Sprintf("%s%s", videoID, ext)
+	return fmt.Sprintf("%s%s", id, ext)
 }
 
 // filepath.Join(cfg.assetsRoot, assetPath) safely builds an OS-correct path by joining the assets root 

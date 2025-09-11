@@ -75,7 +75,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	// create a relative path for the asset (a filename)
 	// used for the URL that clients will use to access the file (like http://localhost:8091/assets/12345.png)
-	assetPath := getAssetPath(videoID, mediaType)
+	assetPath := getAssetPath(mediaType)
 	// take that relative path and converts it to a full filesystem path where the file will 
 	// actually be stored on disk
 	assetDiskPath := cfg.getAssetDiskPath(assetPath)
