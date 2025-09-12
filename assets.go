@@ -40,6 +40,14 @@ func getAssetPath(mediaType string) string {
 	return fmt.Sprintf("%s%s", id, ext)
 }
 
+// S3 URLs are in the format https://<bucket-name>.s3.<region>.amazonaws.com/<key>. 
+// Make sure you use the correct region and bucket name!
+// Create a method on apiConfig that builds a public S3 object URL from a key (path/filename)
+func (cfg apiConfig) getObjectURL(key string) string {
+	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, key)
+}
+
+
 // filepath.Join(cfg.assetsRoot, assetPath) safely builds an OS-correct path by joining the assets root 
 // directory with the relative asset path:
 func (cfg apiConfig) getAssetDiskPath(assetPath string) string {

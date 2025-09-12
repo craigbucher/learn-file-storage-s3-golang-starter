@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
-
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
 
 	"github.com/joho/godotenv"
@@ -15,6 +17,8 @@ type apiConfig struct {
 	db               database.Client
 	jwtSecret        string
 	platform         string
+	s3Client         *s3.Client	// Add an s3Client field to apiConfig of type *s3.Client
+	//							A pointer to an AWS S3 SDK client (from aws-sdk-go-v2)
 	filepathRoot     string
 	assetsRoot       string
 	s3Bucket         string
@@ -76,10 +80,26 @@ func main() {
 		log.Fatal("PORT environment variable is not set")
 	}
 
+	// Use config.LoadDefaultConfig to auto load the default AWS SDK config (the keys you set with aws configure)
+	// As arguments, give it an empty Context and pass config.WithRegion(s3Region) to use the region that's 
+	// set in your .env file.
+	// (config.LoadDefaultConfig(...) loads credentials and settings from the default sources (env vars, 
+	// shared config/credentials files, IAM role), forcing the region to s3Region. It returns awsCfg 
+	// or an error)
+	awsCfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(s3Region))
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Create a client with your config using s3.NewFromConfig:
+	//
+	client := s3.NewFromConfig(awsCfg)
+
+
 	cfg := apiConfig{
 		db:               db,
 		jwtSecret:        jwtSecret,
 		platform:         platform,
+		s3Client:         client,		// Assign the client to the s3Client field
 		filepathRoot:     filepathRoot,
 		assetsRoot:       assetsRoot,
 		s3Bucket:         s3Bucket,
