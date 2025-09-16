@@ -95,6 +95,13 @@ func (cfg *apiConfig) handlerVideoGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// replaces the stored "bucket,key" with a presigned URL before sending the video in the response:
+	video, err = cfg.dbVideoToSignedVideo(video)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't generate presigned URL", err)
+		return
+	}
+
 	respondWithJSON(w, http.StatusOK, video)
 }
 
@@ -114,6 +121,18 @@ func (cfg *apiConfig) handlerVideosRetrieve(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't retrieve videos", err)
 		return
+	}
+
+	for i, video := range videos {
+		// converts the "bucket,key" in VideoURL into a presigned URL for that video:
+		video, err = cfg.dbVideoToSignedVideo(video)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Couldn't generate presigned URL", err)
+			return
+		}
+		// writes the updated video back into the slice: 
+		// (because the loop variable video is a copy, you must assign it back)
+		videos[i] = video
 	}
 
 	respondWithJSON(w, http.StatusOK, videos)

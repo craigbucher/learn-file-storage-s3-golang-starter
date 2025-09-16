@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,10 +12,13 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
+	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -124,15 +128,37 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	// Join directory and key = directory/filename:
 	key = path.Join(directory, key)
 
+	// Call the function to generate a fast-start copy of the uploaded temp file and
+	// return the new file path:
+	processedFilePath, err := processVideoForFastStart(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error processing video", err)
+		return
+	}
+	// Schedule deletion of the processed file when the handler returns:
+	defer os.Remove(processedFilePath)
+
+	// Open the processed video for reading, returning a file handle or an error;
+	// (you need a readable stream to upload it (or to copy it elsewhere))
+	// (S3 SDKs and similar APIs accept an io.Reader; opening the processed file gives you that reader 
+	// so you can stream its bytes to the destination)
+	processedFile, err := os.Open(processedFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not open processed file", err)
+		return
+	}
+	// Ensure the file handle is closed when the handler returns:
+	defer processedFile.Close()
+
 	// Put the object into S3 using PutObject. You'll need to provide:
 	//	* The bucket name
 	//	* The file key. Use the same <random-32-byte-hex>.ext format as the key
-	// 	* The file contents (body). The tempFile is an os.File which implements io.Reader
+	// 	* Upload the processed video to S3, and discard the original
 	//	* Content type, which is the MIME type of the file
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
 		Key:         aws.String(key),
-		Body:        tempFile,
+		Body:        processedFile,
 		ContentType: aws.String(mediaType),
 	})
 	if err != nil {
@@ -140,14 +166,23 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Update the VideoURL of the video record in the database with the S3 bucket and key:
-	// (getObjectURL is in assets.go)
-	url := cfg.getObjectURL(key)
+	// Update the handlerUploadVideo handler code to store bucket and key as a comma delimited string 
+	// in the video_url:
+	url := fmt.Sprintf("%s,%s", cfg.s3Bucket, key)
 	video.VideoURL = &url
 	// calling the UpdateVideo method on it, passing the video object (which now has its VideoURL field populated with the S3 link)
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't update video", err)
+		return
+	}
+
+	// Parses video.VideoURL (stored as "bucket,key")
+	// Generates a presigned S3 URL
+	// Returns the video with VideoURL set to that URL:
+	video, err = cfg.dbVideoToSignedVideo(video)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't generate presigned URL", err)
 		return
 	}
 
@@ -209,4 +244,84 @@ func getVideoAspectRatio(filePath string) (string, error) {
 		return "9:16", nil
 	}
 	return "other", nil
+}
+
+// Create a new function called processVideoForFastStart(filePath string) (string, error) that takes a file 
+// path as input and creates and returns a new path to a file with "fast start" encoding:
+func processVideoForFastStart(inputFilePath string) (string, error) {
+	//Create a new string for the output file path. I just appended .processing to the input file 
+	// (which should be the path to the temp file on disk):
+	processedFilePath := fmt.Sprintf("%s.processing", inputFilePath)
+	// Create a new exec.Cmd using exec.Command:
+	// The command is ffmpeg and the arguments are -i, the input file path, -c, copy, -movflags, faststart, 
+	// -f, mp4 and the output file path
+	cmd := exec.Command("ffmpeg", "-i", inputFilePath, "-movflags", "faststart", "-codec", "copy", "-f", "mp4", processedFilePath)
+	// create a buffer in memory:
+	var stderr bytes.Buffer
+	// tell exec.Cmd to write anything the process prints to stderr into that buffer
+	cmd.Stderr = &stderr
+	// run the command:
+	// (After cmd.Run(), you can read stderr.String() for ffmpeg error messages or logs)
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("error processing video: %s, %v", stderr.String(), err)
+	}
+
+	// read filesystem metadata for the given path. Return fileInfo (info about the file) or an 
+	// error if the path doesn’t exist or isn’t accessible
+	fileInfo, err := os.Stat(processedFilePath)
+	if err != nil {
+		return "", fmt.Errorf("could not stat processed file: %v", err)
+	}
+	// check the file's size:
+	if fileInfo.Size() == 0 {
+		return "", fmt.Errorf("processed file is empty")
+	}
+	// Return the output file path:
+	return processedFilePath, nil
+}
+
+// Create a new (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video, error) method:
+func (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video, error) {
+	// If video.VideoURL is nil (no URL stored), it returns the input video unchanged and no error
+	// (an early-exit guard)
+	if video.VideoURL == nil {
+		return video, nil
+	}
+	// split the video.VideoURL on the comma to get the bucket and key:
+	parts := strings.Split(*video.VideoURL, ",")
+	if len(parts) < 2 {
+		return video, nil
+	}
+	bucket := parts[0]
+	key := parts[1]
+	// use generatePresignedURL to get a presigned URL for the video:
+	// use the S3 client, bucket, and key to presign a GetObject request
+	// 5*time.Minute sets the URL's expiration
+	presigned, err := generatePresignedURL(cfg.s3Client, bucket, key, 5*time.Minute)
+	if err != nil {
+		return video, err
+	}
+	// Set the VideoURL field of the video to the presigned URL:
+	video.VideoURL = &presigned
+	// return the updated video:
+	return video, nil
+}
+
+// Create a new generatePresignedURL(s3Client *s3.Client, bucket, key string, expireTime time.Duration) 
+// (string, error) function:
+func generatePresignedURL(s3Client *s3.Client, bucket, key string, expireTime time.Duration) (string, error) {
+	// Use the SDK to create a s3.PresignClient with s3.NewPresignClient:
+	presignClient := s3.NewPresignClient(s3Client)
+	// Use the client's .PresignGetObject() method with s3.WithPresignExpires as a functional option:
+	// (context.TODO() returns a non-nil placeholder context when you don�t yet have the right context to pass)
+	// (&s3.GetObjectInput{ ... } allocates a GetObjectInput value and takes its address)
+	presignedUrl, err := presignClient.PresignGetObject(context.TODO(), &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(expireTime))
+	if err != nil {
+		return "", fmt.Errorf("failed to generate presigned URL: %v", err)
+	}
+	// Return the .URL field of the v4.PresignedHTTPRequest created by .PresignGetObject():
+	return presignedUrl.URL, nil
 }
